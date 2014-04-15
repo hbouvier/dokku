@@ -4,6 +4,7 @@ APP="$1"; PORT="$2"
 WILDCARD_SSL="$DOKKU_ROOT/tls"
 SSL="$DOKKU_ROOT/$APP/tls"
 
+if [[ "$PORT" != "" ]] ; then
 if [[ -f "$DOKKU_ROOT/VHOST" ]]; then
   VHOST=$(< "$DOKKU_ROOT/VHOST")
   SUBDOMAIN=${APP/%\.${VHOST}/}
@@ -86,4 +87,5 @@ EOF
   fi
   pluginhook nginx-pre-reload $APP
   sudo /etc/init.d/nginx reload > /dev/null
+fi
 fi

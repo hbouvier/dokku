@@ -30,15 +30,40 @@ case "$1" in
 
   build)
     APP="$2"; IMAGE="dokku/$APP"; CACHE_DIR="$DOKKU_ROOT/$APP/cache"
-    id=$(cat | docker run -i -a stdin progrium/buildstep /bin/bash -c "mkdir -p /app && tar -xC /app")
-    test $(docker wait $id) -eq 0
-    docker commit $id $IMAGE > /dev/null
-    [[ -d $CACHE_DIR ]] || mkdir $CACHE_DIR
-    pluginhook pre-build $APP
-    id=$(docker run -d -v $CACHE_DIR:/cache $IMAGE /build/builder)
-    docker attach $id
-    test $(docker wait $id) -eq 0
-    docker commit $id $IMAGE > /dev/null
+    # Support for Dockerfile Containers
+    GITARCHIVE=/tmp/$$.tar
+    cat > "$GITARCHIVE"
+    # Verify if it is a Docker Container to be built
+    set +e
+    tar tvf "$GITARCHIVE" Dockerfile > /dev/null 2>&1 ; CODE=$?
+    set -e
+    if [[ "$CODE" == "0" ]] ; then
+      echo "-----> Docker Container"
+      GITARCHIVEDIR="/tmp/$$"
+      mkdir -p "$GITARCHIVEDIR"
+      cd "$GITARCHIVEDIR"
+      echo "       Extracting the Docker Container $APP"
+      tar xf "$GITARCHIVE" > /dev/null 2>&1
+      echo "       Building the Docker Container $IMAGE"
+      docker build --rm -t $IMAGE .  | sed -e 's/^/         /'
+      if [[ -r "Dockinfo" ]] ; then
+        echo "       Copying Dockinfo to $DOKKU_ROOT/$APP/"
+        cp Dockinfo "$DOKKU_ROOT/$APP/"
+      fi
+      rm -rf "$GITARCHIVEDIR"
+    else
+      #
+      id=$(cat "$GITARCHIVE" | docker run -i -a stdin progrium/buildstep /bin/bash -c "mkdir -p /app && tar -xC /app")
+      test $(docker wait $id) -eq 0
+      docker commit $id $IMAGE > /dev/null
+      [[ -d $CACHE_DIR ]] || mkdir $CACHE_DIR
+      pluginhook pre-build $APP
+      id=$(docker run -d -v $CACHE_DIR:/cache $IMAGE /build/builder)
+      docker attach $id
+      test $(docker wait $id) -eq 0
+      docker commit $id $IMAGE > /dev/null
+    fi
+    rm -rf "$GITARCHIVE"
     pluginhook post-build $APP
     ;;
 
@@ -60,17 +85,50 @@ case "$1" in
     # kill the app when running
     if [[ -f "$DOKKU_ROOT/$APP/CONTAINER" ]]; then
       oldid=$(< "$DOKKU_ROOT/$APP/CONTAINER")
-      docker inspect $oldid &> /dev/null && docker kill $oldid > /dev/null
+      containername=`docker inspect $oldid | grep Name | cut -f4 -d'"' | cut -f2 -d/`
+      docker inspect $oldid &> /dev/null && docker kill $oldid > /dev/null && docker rm $containername > /dev/null
     fi
 
-    # start the app
-    DOCKER_ARGS=$(: | pluginhook docker-args $APP)
-    id=$(docker run -d -p 5000 -e PORT=5000 $DOCKER_ARGS $IMAGE /bin/bash -c "/start web")
-    echo $id > "$DOKKU_ROOT/$APP/CONTAINER"
-    port=$(docker port $id 5000 | sed 's/0.0.0.0://')
-    echo $port > "$DOKKU_ROOT/$APP/PORT"
-    echo "http://$(< "$DOKKU_ROOT/HOSTNAME"):$port" > "$DOKKU_ROOT/$APP/URL"
+    if [[ -f "$DOKKU_ROOT/$APP/Dockinfo" ]]; then
+        echo "       Deploying Docker Container"
+        NAME=`grep ^name $DOKKU_ROOT/$APP/Dockinfo | cut -f2-999 -d: | sed "s/\\$APP/$APP/g"` || true
+        if [ "$NAME" != "" ] ; then 
+            echo $NAME > "$DOKKU_ROOT/$APP/NAME"
+            OPTNAME="--name $NAME"
+        fi
+        PORT=`grep ^port $DOKKU_ROOT/$APP/Dockinfo | cut -f2-999 -d:` || true
+        if [ "$PORT" != "" ] ; then 
+            OPTPORT="-p $PORT"
+        fi
+        LINK=`grep ^link $DOKKU_ROOT/$APP/Dockinfo | cut -f2-999 -d:` || true
+        if [ "$LINK" != "" ] ; then 
+            OPTLINK="--link $LINK"
+        fi
+        VOLUME=`grep ^volume $DOKKU_ROOT/$APP/Dockinfo | cut -f2-999 -d:` || true
+        if [ "$VOLUME" != "" ] ; then 
+            OPTVOLUME="--vol $VOLUME"
+        fi
+        OPTIONS=`grep ^options $DOKKU_ROOT/$APP/Dockinfo | cut -f2-999 -d: | sed "s/\\$APP/$APP/g"` || true
+        DOCKER_ARGS=$(: | pluginhook docker-args $APP)
+        echo "       Starting the Docker Container: docker run -d $DOCKER_ARGS $OPTNAME $OPTPORT $OPTLINK $OPTVOLUME $OPTIONS $IMAGE"
+        id=$(docker run -d $DOCKER_ARGS $OPTNAME $OPTPORT $OPTLINK $OPTVOLUME $OPTIONS $IMAGE)
+        echo $id > "$DOKKU_ROOT/$APP/CONTAINER"
+        if [[ "$PORT" != "" && `echo $PORT | grep -v :` ]] ; then
+            port=$(docker port $id $PORT | sed 's/0.0.0.0://')
+            echo $port > "$DOKKU_ROOT/$APP/PORT"
+            echo "http://$(< "$DOKKU_ROOT/HOSTNAME"):$port" > "$DOKKU_ROOT/$APP/URL"
+        fi
+        docker logs $id 2>&1 | sed -e 's/^/        /'
+    else
 
+      # start the app
+      DOCKER_ARGS=$(: | pluginhook docker-args $APP)
+      id=$(docker run -d -p 5000 -e PORT=5000 $DOCKER_ARGS $IMAGE /bin/bash -c "/start web")
+      echo $id > "$DOKKU_ROOT/$APP/CONTAINER"
+      port=$(docker port $id 5000 | sed 's/0.0.0.0://')
+      echo $port > "$DOKKU_ROOT/$APP/PORT"
+      echo "http://$(< "$DOKKU_ROOT/HOSTNAME"):$port" > "$DOKKU_ROOT/$APP/URL"
+    fi
     pluginhook post-deploy $APP $port
     ;;
 

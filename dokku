@@ -35,7 +35,7 @@ case "$1" in
     cat > "$GITARCHIVE"
     # Verify if it is a Docker Container to be built
     set +e
-    tar tvf "$GITARCHIVE" Dockerfile > /dev/null 2>&1 ; CODE=$?
+    tar tvf "$GITARCHIVE" ./Dockerfile > /dev/null 2>&1 ; CODE=$?
     set -e
     if [[ "$CODE" == "0" ]] ; then
       echo "-----> Docker Container"
